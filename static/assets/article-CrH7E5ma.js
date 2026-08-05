@@ -1,0 +1,1 @@
+import{v as e}from"./http-MaAPZKEi.js";export{e as getArticles};

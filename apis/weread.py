@@ -4,15 +4,23 @@
 提供 Cookie 配置、连接测试、手动采集等功能
 """
 
+import base64
 import json
 import os
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from collections import defaultdict
+from datetime import datetime
 from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy.orm import Session
 
 from .base import success_response, error_response
 from core.auth import get_current_user_or_ak
 from core.config import Config, cfg as app_cfg
+from core.db import DB
+from core.models.base import DATA_STATUS
+from core.models.feed import FEATURED_MP_ID, Feed
 
 router = APIRouter(prefix="/weread", tags=["微信读书"])
 
@@ -34,6 +42,208 @@ class WereadCollectRequest(BaseModel):
 
 class WereadMPTestRequest(BaseModel):
     mp_id: Optional[str] = ""
+
+
+class WereadSourceImportItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    book_id: str = Field(
+        min_length=1,
+        # The suffix is Base64-encoded into Feed.faker_id (String(255)).
+        # 189 ASCII suffix bytes encode to 252 bytes; 190 encode to 256.
+        max_length=196,
+        pattern=r"^MP_WXS_[A-Za-z0-9_-]+$",
+    )
+    mp_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("book_id")
+    @classmethod
+    def validate_book_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("book_id 不能包含首尾空白")
+        if value == FEATURED_MP_ID:
+            raise ValueError("book_id 是系统保留 ID")
+        return value
+
+    @field_validator("mp_name")
+    @classmethod
+    def validate_mp_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mp_name 不能为空")
+        if value != value.strip():
+            raise ValueError("mp_name 不能包含首尾空白")
+        return value
+
+
+class WereadSourceImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sources: list[WereadSourceImportItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_sources(self):
+        book_ids = set()
+        normalized_names = set()
+        for source in self.sources:
+            if source.book_id in book_ids:
+                raise ValueError(f"book_id 重复: {source.book_id}")
+            normalized_name = source.mp_name.casefold()
+            if normalized_name in normalized_names:
+                raise ValueError(f"公众号名称重复: {source.mp_name}")
+            book_ids.add(source.book_id)
+            normalized_names.add(normalized_name)
+        return self
+
+
+class _WereadSourceConflictError(Exception):
+    def __init__(self, conflicts: list[dict]):
+        super().__init__("微信读书来源存在冲突")
+        self.conflicts = conflicts
+
+
+def _derive_faker_id(book_id: str) -> str:
+    suffix = book_id.removeprefix("MP_WXS_")
+    return base64.b64encode(suffix.encode("utf-8")).decode("ascii")
+
+
+def _import_weread_sources_transactionally(
+    sources: list[WereadSourceImportItem],
+    engine=None,
+) -> dict:
+    """Add missing WeRead feeds without collection or credential side effects."""
+    target_engine = engine or DB.get_engine()
+    with target_engine.connect() as raw_connection:
+        isolation_level = raw_connection.default_isolation_level
+        connection = (
+            raw_connection.execution_options(isolation_level=isolation_level)
+            if isolation_level
+            else raw_connection
+        )
+        with Session(bind=connection, future=True) as session:
+            with session.begin():
+                existing_feeds = session.query(Feed).with_for_update().all()
+                feeds_by_id = {feed.id: feed for feed in existing_feeds}
+                feeds_by_name = defaultdict(list)
+                feeds_by_faker_id = defaultdict(list)
+                for feed in existing_feeds:
+                    feeds_by_name[(feed.mp_name or "").casefold()].append(feed)
+                    if feed.faker_id:
+                        feeds_by_faker_id[feed.faker_id].append(feed)
+
+                conflicts = []
+                statuses = []
+                for source in sources:
+                    existing = feeds_by_id.get(source.book_id)
+                    faker_id = _derive_faker_id(source.book_id)
+
+                    for feed in feeds_by_name[source.mp_name.casefold()]:
+                        if feed.id != source.book_id:
+                            conflicts.append({
+                                "book_id": source.book_id,
+                                "code": "name_assigned_to_other_id",
+                                "message": "公众号名称已登记到其他 Feed ID",
+                            })
+                            break
+
+                    for feed in feeds_by_faker_id[faker_id]:
+                        if feed.id != source.book_id:
+                            conflicts.append({
+                                "book_id": source.book_id,
+                                "code": "faker_id_assigned_to_other_feed",
+                                "message": "派生 faker identity 已被其他 Feed 使用",
+                            })
+                            break
+
+                    if existing is None:
+                        statuses.append((source, "created", faker_id))
+                        continue
+
+                    if existing.mp_name != source.mp_name:
+                        conflicts.append({
+                            "book_id": source.book_id,
+                            "code": "book_id_name_mismatch",
+                            "message": "bookId 已登记但公众号名称不一致",
+                        })
+                    if existing.status != DATA_STATUS.ACTIVE:
+                        conflicts.append({
+                            "book_id": source.book_id,
+                            "code": "feed_not_active",
+                            "message": "bookId 对应 Feed 不是启用状态",
+                        })
+                    if existing.faker_id != faker_id:
+                        conflicts.append({
+                            "book_id": source.book_id,
+                            "code": "faker_id_mismatch",
+                            "message": "bookId 对应 Feed 的 faker identity 不一致",
+                        })
+                    statuses.append((source, "unchanged", faker_id))
+
+                if conflicts:
+                    raise _WereadSourceConflictError(conflicts)
+
+                now = datetime.now()
+                for source, item_status, faker_id in statuses:
+                    if item_status != "created":
+                        continue
+                    session.add(Feed(
+                        id=source.book_id,
+                        mp_name=source.mp_name,
+                        mp_cover="",
+                        mp_intro="",
+                        status=DATA_STATUS.ACTIVE,
+                        sync_time=0,
+                        update_time=0,
+                        created_at=now,
+                        updated_at=now,
+                        faker_id=faker_id,
+                    ))
+                session.flush()
+
+    items = [
+        {
+            "book_id": source.book_id,
+            "mp_name": source.mp_name,
+            "status": item_status,
+        }
+        for source, item_status, _faker_id in statuses
+    ]
+    created = sum(item["status"] == "created" for item in items)
+    unchanged = len(items) - created
+    return {
+        "total": len(items),
+        "created": created,
+        "unchanged": unchanged,
+        "items": items,
+    }
+
+
+@router.post("/sources/import", summary="批量登记微信读书公众号来源")
+async def import_weread_sources(
+    req: WereadSourceImportRequest,
+    current_user: dict = Depends(get_current_user_or_ak),
+):
+    """Atomically add missing Feed rows without collection or remote requests."""
+    try:
+        result = _import_weread_sources_transactionally(req.sources)
+    except _WereadSourceConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_response(
+                40901,
+                "微信读书来源存在冲突，整批未写入",
+                {"conflicts": exc.conflicts},
+            ),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_response(
+                50001,
+                "微信读书来源登记失败，整批未写入",
+            ),
+        ) from exc
+
+    return success_response(result, "微信读书来源登记完成")
 
 
 def _get_weread_config() -> Config:
