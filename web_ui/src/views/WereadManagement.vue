@@ -8,7 +8,7 @@
         正在测试连接...
       </a-alert>
       <a-alert v-else-if="connectionStatus === 'success'" type="success">
-        连接成功！书架共 {{ bookCount }} 本书，用户 VID: {{ vid }}<span v-if="hasTicket">；公众号采集凭据已验证</span>
+        连接成功！书架共 {{ bookCount }} 本书，用户 VID: {{ vid }}<span v-if="hasTicket">；已保存可选 ticket</span>
       </a-alert>
       <a-alert v-else-if="connectionStatus === 'error'" type="error">
         连接失败：{{ errorMsg }}
@@ -27,10 +27,10 @@
             :disabled="cookieManagedByConfig"
           />
         </a-form-item>
-        <a-form-item label="x-wr-ticket（公众号采集）" field="ticket" extra="仅 weread_mp 模式需要：从 /web/mp/articles 请求的 Request Headers 复制">
+        <a-form-item label="x-wr-ticket（可选）" field="ticket" extra="仅当 /web/mp/articles 请求实际包含该请求头时填写；没有则留空">
           <a-input-password
             v-model="cookieForm.ticket"
-            placeholder="粘贴 x-wr-ticket；只采集书籍笔记时可留空"
+            placeholder="请求中存在 x-wr-ticket 时粘贴；否则留空"
             allow-clear
             :disabled="ticketManagedByConfig"
           />

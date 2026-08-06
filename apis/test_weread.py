@@ -48,7 +48,7 @@ class WereadConfigAPITest(unittest.TestCase):
         self.assertEqual(saved["ticket"], "ticket-value")
 
     @patch("apis.weread._load_weread_data")
-    def test_status_reports_ticket_separately_from_notes_configuration(self, load):
+    def test_status_reports_cookie_only_as_mp_configured(self, load):
         load.return_value = {
             "cookie": "wr_vid=123; wr_skey=skey",
             "vid": "123",
@@ -58,7 +58,7 @@ class WereadConfigAPITest(unittest.TestCase):
         response = asyncio.run(get_weread_status(current_user={"id": "test"}))
 
         self.assertTrue(response["data"]["configured"])
-        self.assertFalse(response["data"]["mp_configured"])
+        self.assertTrue(response["data"]["mp_configured"])
         self.assertFalse(response["data"]["has_ticket"])
 
     @patch("apis.weread.app_cfg.get")
@@ -118,13 +118,13 @@ class WereadConfigAPITest(unittest.TestCase):
         save.assert_not_called()
 
     @patch("core.wx.model.weread_mp.MpsWereadMP")
-    def test_mp_connection_rejects_invalid_ticket(self, collector_class):
+    def test_mp_connection_reports_upstream_auth_failure(self, collector_class):
         from core.wx.model.weread_mp import WereadMPAPIError
 
         collector = collector_class.return_value
         collector._get_mp_articles_page.side_effect = WereadMPAPIError(
             -2041,
-            "ticket expired",
+            "request rejected",
             retriable=False,
         )
 

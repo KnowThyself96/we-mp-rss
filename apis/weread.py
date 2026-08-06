@@ -297,7 +297,7 @@ async def get_weread_status(current_user=Depends(get_current_user_or_ak)):
         "ticket_masked": ticket[:12] + "..." if ticket else "",
         "has_cookie": bool(cookie),
         "has_ticket": bool(ticket),
-        "mp_configured": bool(cookie and ticket),
+        "mp_configured": bool(str(cookie or "").strip()),
         "managed_by_config": bool(config_cookie or config_ticket or config_vid),
         "cookie_managed_by_config": bool(config_cookie),
         "ticket_managed_by_config": bool(config_ticket),
@@ -379,7 +379,7 @@ async def test_weread_mp_connection(
     req: WereadMPTestRequest,
     current_user=Depends(get_current_user_or_ak),
 ):
-    """Use an existing MP feed to validate Cookie and x-wr-ticket together."""
+    """Use an existing MP feed to validate the Cookie and optional ticket."""
     from core.db import DB
     from core.models.feed import Feed
     from core.wx.model.weread_mp import MpsWereadMP, WereadMPAPIError, parse_mp_articles
@@ -409,7 +409,7 @@ async def test_weread_mp_connection(
     return success_response({
         "mp_id": mp_id,
         "article_count": len(articles),
-    }, "公众号采集凭据有效")
+    }, "公众号文章列表连接有效")
 
 
 @router.post("/bookshelf", summary="获取书架书籍列表")

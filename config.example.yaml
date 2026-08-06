@@ -126,7 +126,7 @@ gather:
   content: ${GATHER.CONTENT:-False}
   #采集模式，web模式（可采集到发布链接)，api模式（可采集临时链接），app模式（采集最新消息）
   #可选值: web | api | app | free_publish | playwright | weread | weread_mp | auto
-  #weread_mp 使用微信读书 Web 接口采集公众号文章，需要下方 Cookie 与 x-wr-ticket
+  #weread_mp 使用微信读书 Web 接口采集公众号文章，需要下方 Cookie；ticket 仅在浏览器请求实际包含时选填
   model: ${GATHER.MODEL:-web}
   #是否自动检查未采集文章内容，默认False
   content_auto_check: ${GATHER.CONTENT_AUTO_CHECK:-True}
@@ -165,7 +165,7 @@ weread:
   #微信读书 Cookie (从浏览器 weread.qq.com 请求中获取)
   #需要包含: wr_vid, wr_skey, wr_gid, wr_fp 等
   cookie: "${WEREAD_COOKIE:-}"
-  #公众号文章列表请求凭据（从 /web/mp/articles 请求头复制）
+  #可选：仅当 /web/mp/articles 请求实际包含 x-wr-ticket 时复制
   ticket: "${WEREAD_TICKET:-}"
   #用户vid (从 wr_vid Cookie 中提取)
   vid: "${WEREAD_VID:-}"

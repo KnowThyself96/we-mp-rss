@@ -6,13 +6,14 @@
 
 1. 登录 `https://weread.qq.com`，打开任意公众号页面。
 2. 在浏览器开发者工具的 Network 面板找到 `/web/mp/articles` 请求。
-3. 从 Request Headers 复制完整 `Cookie` 和 `x-wr-ticket`。
+3. 从 Request Headers 复制完整 `Cookie`；如果该请求实际包含 `x-wr-ticket`，可同时复制，未出现则留空。
 4. 在管理页的“微信读书公众号采集”中保存，或设置环境变量：
 
 ```env
 GATHER.MODEL=weread_mp
 WEREAD_COOKIE=wr_vid=...; wr_skey=...; wr_rt=...
-WEREAD_TICKET=...
+# 可选：仅当浏览器请求实际包含 x-wr-ticket 时设置
+# WEREAD_TICKET=...
 WEREAD_MP_MAX_PAGES=20
 WEREAD_PAGE_INTERVAL=1
 WEREAD_CONTENT_INTERVAL=2
@@ -36,4 +37,4 @@ GATHER.CONTENT=True
 
 ## 限制
 
-`x-wr-ticket` 可能过期。出现 `-2041` 时，应从浏览器的新 `/web/mp/articles` 请求重新复制 ticket。通过环境变量提供的凭据优先于管理页保存值，管理页会标记为部署配置托管。微信读书也有访问频率限制，不建议把上述请求间隔设为 0。
+`x-wr-ticket` 不是必填项：浏览器请求没有该请求头时不要自行补造；如果已配置 ticket 后出现认证或风控失败，应以新的 `/web/mp/articles` 请求为准重新复制或清空。通过环境变量提供的凭据优先于管理页保存值，管理页会标记为部署配置托管。微信读书也有访问频率限制，不建议把上述请求间隔设为 0。

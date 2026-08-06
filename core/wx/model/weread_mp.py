@@ -121,21 +121,23 @@ class MpsWereadMP(MpsWeread):
         return max(float(cfg.get("weread.page_interval", 1) or 0), 0)
 
     def _request_headers(self, include_ticket=False):
+        cookie = getattr(self, "_weread_cookies", "")
+        if not str(cookie or "").strip():
+            raise WereadMPAPIError(
+                "missing_cookie",
+                "WEREAD_COOKIE is required for WeRead Web requests",
+                retriable=False,
+            )
         headers = {
-            "Cookie": self._weread_cookies,
+            "Cookie": cookie,
             "User-Agent": self.user_agent,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Referer": "https://weread.qq.com/",
         }
-        if include_ticket:
-            if not self._weread_ticket:
-                raise WereadMPAPIError(
-                    "missing_ticket",
-                    "WEREAD_TICKET is required for the article list endpoint",
-                    retriable=False,
-                )
-            headers["x-wr-ticket"] = self._weread_ticket
+        ticket = getattr(self, "_weread_ticket", "")
+        if include_ticket and str(ticket or "").strip():
+            headers["x-wr-ticket"] = ticket
         return headers
 
     def _get_mp_articles_page(self, book_id: str, offset=0):

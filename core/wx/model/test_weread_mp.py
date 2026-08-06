@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from core.wx.model.weread_mp import (
     MpsWereadMP,
     WereadMPAPIError,
@@ -108,17 +110,101 @@ class WereadMpRequestTest(unittest.TestCase):
             {"bookId": "MP_WXS_1", "offset": 20},
         )
         self.assertEqual(kwargs["headers"]["x-wr-ticket"], "ticket-value")
+        self.assertEqual(kwargs["timeout"], (10, 30))
+        get.assert_called_once()
 
     @patch("requests.get")
-    def test_article_list_requires_ticket(self, get):
+    def test_article_list_allows_cookie_only_and_omits_ticket_header(self, get):
+        response = Mock(status_code=200)
+        response.json.return_value = {"reviews": []}
+        get.return_value = response
         collector = self.make_collector()
         collector._weread_ticket = ""
+
+        payload = collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+        self.assertEqual(payload, {"reviews": []})
+        self.assertNotIn("x-wr-ticket", get.call_args.kwargs["headers"])
+        self.assertEqual(get.call_args.kwargs["headers"]["Cookie"], "wr_vid=1; wr_skey=skey")
+        get.assert_called_once()
+
+    @patch("requests.get")
+    def test_article_list_rejects_missing_cookie_before_request(self, get):
+        collector = self.make_collector()
+
+        for cookie in ("", " \t"):
+            with self.subTest(cookie=repr(cookie)):
+                collector._weread_cookies = cookie
+                with self.assertRaises(WereadMPAPIError) as caught:
+                    collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+                self.assertEqual(caught.exception.code, "missing_cookie")
+                self.assertFalse(caught.exception.retriable)
+        get.assert_not_called()
+
+    @patch("requests.get")
+    def test_article_list_reports_http_auth_failure_without_retry(self, get):
+        get.return_value = Mock(status_code=401)
+        collector = self.make_collector()
 
         with self.assertRaises(WereadMPAPIError) as caught:
             collector._get_mp_articles_page("MP_WXS_1", offset=0)
 
-        self.assertEqual(caught.exception.code, "missing_ticket")
-        get.assert_not_called()
+        self.assertEqual(caught.exception.code, 401)
+        get.assert_called_once()
+
+    @patch("requests.get")
+    def test_article_list_reports_rate_limit_without_retry(self, get):
+        response = Mock(status_code=200)
+        response.json.return_value = {"errCode": -2041, "errMsg": "request blocked"}
+        get.return_value = response
+        collector = self.make_collector()
+
+        with self.assertRaises(WereadMPAPIError) as caught:
+            collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+        self.assertEqual(caught.exception.code, -2041)
+        self.assertFalse(caught.exception.retriable)
+        get.assert_called_once()
+
+    @patch("requests.get")
+    def test_article_list_reports_network_failure_without_retry(self, get):
+        collector = self.make_collector()
+
+        for error in (requests.Timeout("timed out"), requests.ConnectionError("offline")):
+            with self.subTest(error=type(error).__name__):
+                get.reset_mock()
+                get.side_effect = error
+                with self.assertRaises(WereadMPAPIError) as caught:
+                    collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+                self.assertEqual(caught.exception.code, "network_error")
+                get.assert_called_once()
+
+    @patch("requests.get")
+    def test_article_list_rejects_invalid_response_without_retry(self, get):
+        collector = self.make_collector()
+        cases = (
+            (ValueError("not json"), "invalid_json"),
+            (["not", "an", "object"], "invalid_response"),
+        )
+
+        for result, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                get.reset_mock()
+                response = Mock(status_code=200)
+                if isinstance(result, Exception):
+                    response.json.side_effect = result
+                else:
+                    response.json.return_value = result
+                get.side_effect = None
+                get.return_value = response
+
+                with self.assertRaises(WereadMPAPIError) as caught:
+                    collector._get_mp_articles_page("MP_WXS_1", offset=0)
+
+                self.assertEqual(caught.exception.code, expected_code)
+                get.assert_called_once()
 
     @patch("requests.get")
     def test_content_request_extracts_official_article_html(self, get):

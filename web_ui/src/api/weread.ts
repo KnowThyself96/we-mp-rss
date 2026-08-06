@@ -15,7 +15,7 @@ export async function testWereadConnection() {
     return http.post('/wx/weread/test')
 }
 
-/** 测试微信读书公众号列表凭据 */
+/** 测试微信读书公众号文章列表连接 */
 export async function testWereadMpConnection(mpId?: string) {
     return http.post('/wx/weread/mp/test', { mp_id: mpId || '' })
 }
